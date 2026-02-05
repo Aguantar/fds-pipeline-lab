@@ -1,0 +1,2 @@
+apache-airflow-providers-postgres==5.10.0
+requests==2.31.0
