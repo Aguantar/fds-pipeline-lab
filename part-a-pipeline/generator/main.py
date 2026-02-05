@@ -74,8 +74,6 @@ def run_phase1(tps: int, metrics: MetricsCollector):
 
 async def run_phase2(tps: int, metrics: MetricsCollector):
     print(f"[Phase 2] Starting generator with target TPS: {tps}")
-    print(f"[Phase 2] PostgreSQL: {Config.POSTGRES_HOST}:{Config.POSTGRES_PORT}/{Config.POSTGRES_DB}")
-    print(f"[Phase 2] Schema: {Config.POSTGRES_SCHEMA}")
     print(f"[Phase 2] Pool size: 10-50")
     sys.stdout.flush()
     
@@ -115,7 +113,6 @@ async def run_phase2(tps: int, metrics: MetricsCollector):
             except Exception as e:
                 metrics.record_error()
                 print(f"[Error] {e}")
-                sys.stdout.flush()
             
             if time.time() - last_metrics_time >= Config.METRICS_INTERVAL:
                 metrics.flush()
@@ -133,8 +130,7 @@ async def run_phase2(tps: int, metrics: MetricsCollector):
 
 async def run_phase2_concurrent(tps: int, metrics: MetricsCollector):
     print(f"[Phase 2-B] Starting generator with target TPS: {tps}")
-    print(f"[Phase 2-B] PostgreSQL: {Config.POSTGRES_HOST}:{Config.POSTGRES_PORT}/{Config.POSTGRES_DB}")
-    print(f"[Phase 2-B] Concurrent batch mode")
+    print(f"[Phase 2-B] Concurrent batch mode (Pool: 50)")
     sys.stdout.flush()
     
     pool = await asyncpg.create_pool(
@@ -173,7 +169,6 @@ async def run_phase2_concurrent(tps: int, metrics: MetricsCollector):
             for result in results:
                 if isinstance(result, Exception):
                     metrics.record_error()
-                    print(f"[Error] {result}")
                 else:
                     metrics.record_success(result)
             
@@ -193,13 +188,10 @@ async def run_phase2_concurrent(tps: int, metrics: MetricsCollector):
 # ============================================
 
 async def run_phase2_optimized(tps: int, metrics: MetricsCollector):
-    """Phase 2-C: Pool 100 + Batch INSERT"""
     print(f"[Phase 2-C] Starting generator with target TPS: {tps}")
-    print(f"[Phase 2-C] PostgreSQL: {Config.POSTGRES_HOST}:{Config.POSTGRES_PORT}/{Config.POSTGRES_DB}")
-    print(f"[Phase 2-C] Large Pool (100) + Batch INSERT mode")
+    print(f"[Phase 2-C] Pool(100) + Batch(100) mode")
     sys.stdout.flush()
     
-    # Pool 크기 증가: 50 → 100
     pool = await asyncpg.create_pool(
         host=Config.POSTGRES_HOST,
         port=Config.POSTGRES_PORT,
@@ -214,29 +206,22 @@ async def run_phase2_optimized(tps: int, metrics: MetricsCollector):
     sys.stdout.flush()
     
     last_metrics_time = time.time()
-    batch_size = 100  # 한 번에 100건씩 INSERT
+    batch_size = 100
     
     async def insert_batch():
-        """Batch INSERT: 100건을 하나의 쿼리로"""
-        # 트랜잭션 100건 생성
         transactions = [generate_transaction() for _ in range(batch_size)]
-        
         start = time.time()
         async with pool.acquire() as conn:
-            # executemany로 한번에 INSERT
             await conn.executemany(f"""
                 INSERT INTO {Config.POSTGRES_SCHEMA}.transactions 
                 (tx_id, card_number, amount, merchant, created_at)
                 VALUES ($1, $2, $3, $4, NOW())
             """, [(tx['tx_id'], tx['card_number'], tx['amount'], tx['merchant']) for tx in transactions])
-        
         return time.time() - start, batch_size
     
     try:
         while True:
             loop_start = time.time()
-            
-            # 동시에 여러 Batch 실행
             concurrent_batches = max(tps // (batch_size * 10), 1)
             tasks = [insert_batch() for _ in range(concurrent_batches)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -255,13 +240,76 @@ async def run_phase2_optimized(tps: int, metrics: MetricsCollector):
                 metrics.flush()
                 last_metrics_time = time.time()
             
-            # TPS 조절
             total_inserted = concurrent_batches * batch_size
             elapsed = time.time() - loop_start
             expected_time = total_inserted / tps
             if elapsed < expected_time:
                 await asyncio.sleep(expected_time - elapsed)
+    finally:
+        await pool.close()
+
+# ============================================
+# Phase 2-D: Maximum Pool + Large Batch
+# ============================================
+
+async def run_phase2_max(tps: int, metrics: MetricsCollector):
+    print(f"[Phase 2-D] Starting generator with target TPS: {tps}")
+    print(f"[Phase 2-D] Pool(200) + Batch(500) mode")
+    sys.stdout.flush()
     
+    pool = await asyncpg.create_pool(
+        host=Config.POSTGRES_HOST,
+        port=Config.POSTGRES_PORT,
+        user=Config.POSTGRES_USER,
+        password=Config.POSTGRES_PASSWORD,
+        database=Config.POSTGRES_DB,
+        min_size=50,
+        max_size=200
+    )
+    
+    print(f"[Phase 2-D] Connection pool created (max: 200)")
+    sys.stdout.flush()
+    
+    last_metrics_time = time.time()
+    batch_size = 500
+    
+    async def insert_batch():
+        transactions = [generate_transaction() for _ in range(batch_size)]
+        start = time.time()
+        async with pool.acquire() as conn:
+            await conn.executemany(f"""
+                INSERT INTO {Config.POSTGRES_SCHEMA}.transactions 
+                (tx_id, card_number, amount, merchant, created_at)
+                VALUES ($1, $2, $3, $4, NOW())
+            """, [(tx['tx_id'], tx['card_number'], tx['amount'], tx['merchant']) for tx in transactions])
+        return time.time() - start, batch_size
+    
+    try:
+        while True:
+            loop_start = time.time()
+            concurrent_batches = max(tps // (batch_size * 5), 1)
+            tasks = [insert_batch() for _ in range(concurrent_batches)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for result in results:
+                if isinstance(result, Exception):
+                    for _ in range(batch_size):
+                        metrics.record_error()
+                    print(f"[Error] {result}")
+                else:
+                    latency, count = result
+                    for _ in range(count):
+                        metrics.record_success(latency / count)
+            
+            if time.time() - last_metrics_time >= Config.METRICS_INTERVAL:
+                metrics.flush()
+                last_metrics_time = time.time()
+            
+            total_inserted = concurrent_batches * batch_size
+            elapsed = time.time() - loop_start
+            expected_time = total_inserted / tps
+            if elapsed < expected_time:
+                await asyncio.sleep(expected_time - elapsed)
     finally:
         await pool.close()
 
@@ -291,6 +339,8 @@ def main():
         asyncio.run(run_phase2_concurrent(Config.TPS, metrics))
     elif Config.PHASE == 23:
         asyncio.run(run_phase2_optimized(Config.TPS, metrics))
+    elif Config.PHASE == 24:
+        asyncio.run(run_phase2_max(Config.TPS, metrics))
     else:
         print(f"[Error] Phase {Config.PHASE} not implemented yet")
 
