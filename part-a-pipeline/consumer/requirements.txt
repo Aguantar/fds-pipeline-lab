@@ -1,4 +1,4 @@
-psycopg2-binary==2.9.9
+asyncpg==0.29.0
 redis==5.0.1
 psutil==5.9.8
 numpy==1.26.4

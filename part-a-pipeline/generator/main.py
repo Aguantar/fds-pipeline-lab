@@ -10,18 +10,191 @@ import json
 import psycopg2
 import asyncpg
 import redis.asyncio as aioredis
-from faker import Faker
+from datetime import datetime
 from config import Config
 from metrics import MetricsCollector
 
-fake = Faker('ko_KR')
+# ============================================
+# 현실적 데이터 생성기 (sample_data_generator 기반)
+# ============================================
+
+NUM_USERS = 500
+random.seed(None)  # 매번 다른 시드
+
+USER_IDS = [f"user_{i:05d}" for i in range(NUM_USERS)]
+
+USER_CARDS = {
+    user_id: f"4532-****-****-{random.randint(1000, 9999)}"
+    for user_id in USER_IDS
+}
+
+USER_TIERS = {}
+for user_id in USER_IDS:
+    rand = random.random()
+    if rand < 0.02:
+        USER_TIERS[user_id] = 'vip'
+    elif rand < 0.15:
+        USER_TIERS[user_id] = 'premium'
+    else:
+        USER_TIERS[user_id] = 'normal'
+
+REGIONS = ['서울', '경기', '인천', '부산', '대구', '광주', '대전', '울산', '세종', '제주']
+REGION_WEIGHTS = [30, 25, 10, 8, 5, 4, 4, 3, 1, 10]
+
+USER_REGIONS = {
+    user_id: random.choices(REGIONS, weights=REGION_WEIGHTS, k=1)[0]
+    for user_id in USER_IDS
+}
+
+MERCHANTS = {
+    'convenience': {
+        'names': ['CU', 'GS25', '세븐일레븐', '이마트24', '미니스톱'],
+        'amount_range': (1000, 30000),
+        'weight': 25,
+        'hours': (0, 24)
+    },
+    'coffee': {
+        'names': ['스타벅스', '투썸플레이스', '이디야', '메가커피', '빽다방'],
+        'amount_range': (3000, 15000),
+        'weight': 20,
+        'hours': (7, 22)
+    },
+    'restaurant': {
+        'names': ['맥도날드', '버거킹', '교촌치킨', '피자헛', '본죽', '한신포차', '새마을식당'],
+        'amount_range': (5000, 300000),
+        'weight': 20,
+        'hours': (6, 24)
+    },
+    'delivery': {
+        'names': ['배달의민족', '쿠팡이츠', '요기요'],
+        'amount_range': (15000, 100000),
+        'weight': 12,
+        'hours': (10, 2)
+    },
+    'online_shopping': {
+        'names': ['쿠팡', '네이버쇼핑', 'SSG닷컴', '11번가', '무신사'],
+        'amount_range': (10000, 500000),
+        'weight': 10,
+        'hours': (0, 24)
+    },
+    'supermarket': {
+        'names': ['이마트', '홈플러스', '롯데마트', '코스트코', '트레이더스'],
+        'amount_range': (30000, 300000),
+        'weight': 5,
+        'hours': (10, 22)
+    },
+    'fashion': {
+        'names': ['자라', 'H&M', '유니클로', '나이키', '아디다스'],
+        'amount_range': (30000, 500000),
+        'weight': 4,
+        'hours': (10, 21)
+    },
+    'electronics': {
+        'names': ['삼성스토어', '애플스토어', '하이마트', '롯데하이마트'],
+        'amount_range': (50000, 3000000),
+        'weight': 2,
+        'hours': (10, 21)
+    },
+    'luxury': {
+        'names': ['루이비통', '샤넬', '구찌', '에르메스', '롤렉스'],
+        'amount_range': (500000, 50000000),
+        'weight': 1,
+        'hours': (10, 20)
+    },
+    'travel': {
+        'names': ['대한항공', '아시아나항공', '야놀자', '여기어때', '마이리얼트립'],
+        'amount_range': (50000, 5000000),
+        'weight': 1,
+        'hours': (0, 24)
+    }
+}
+
+CATEGORIES = list(MERCHANTS.keys())
+CATEGORY_WEIGHTS = [MERCHANTS[cat]['weight'] for cat in CATEGORIES]
+
+def get_time_slot(hour: int) -> str:
+    if 0 <= hour < 6:
+        return 'dawn'
+    elif 6 <= hour < 11:
+        return 'morning'
+    elif 11 <= hour < 14:
+        return 'lunch'
+    elif 14 <= hour < 18:
+        return 'afternoon'
+    elif 18 <= hour < 22:
+        return 'evening'
+    else:
+        return 'night'
+
+def generate_amount(user_id: str, category: str) -> int:
+    tier = USER_TIERS[user_id]
+    min_amt, max_amt = MERCHANTS[category]['amount_range']
+    
+    if tier == 'vip':
+        max_amt = min(max_amt * 3, 100000000)
+    elif tier == 'premium':
+        max_amt = min(int(max_amt * 1.5), 20000000)
+    
+    if category == 'restaurant':
+        rand = random.random()
+        if rand < 0.80:
+            amount = random.randint(min_amt, 30000)
+        elif rand < 0.95:
+            amount = random.randint(30000, 80000)
+        else:
+            amount = random.randint(80000, max_amt)
+    elif category in ['luxury', 'electronics', 'travel']:
+        rand = random.random()
+        if rand < 0.50:
+            amount = random.randint(min_amt, min_amt + (max_amt - min_amt) // 3)
+        elif rand < 0.80:
+            amount = random.randint(min_amt + (max_amt - min_amt) // 3, min_amt + 2 * (max_amt - min_amt) // 3)
+        else:
+            amount = random.randint(min_amt + 2 * (max_amt - min_amt) // 3, max_amt)
+    else:
+        rand = random.random()
+        if rand < 0.70:
+            amount = random.randint(min_amt, min_amt + (max_amt - min_amt) // 3)
+        elif rand < 0.95:
+            amount = random.randint(min_amt + (max_amt - min_amt) // 3, min_amt + 2 * (max_amt - min_amt) // 3)
+        else:
+            amount = random.randint(min_amt + 2 * (max_amt - min_amt) // 3, max_amt)
+    
+    if amount >= 10000:
+        amount = (amount // 1000) * 1000
+    elif amount >= 1000:
+        amount = (amount // 100) * 100
+    
+    return amount
 
 def generate_transaction() -> dict:
+    """현실적인 트랜잭션 생성"""
+    user_id = random.choices(
+        USER_IDS,
+        weights=[3 if USER_TIERS[u] == 'vip' else 2 if USER_TIERS[u] == 'premium' else 1 for u in USER_IDS],
+        k=1
+    )[0]
+    
+    category = random.choices(CATEGORIES, weights=CATEGORY_WEIGHTS, k=1)[0]
+    amount = generate_amount(user_id, category)
+    merchant = random.choice(MERCHANTS[category]['names'])
+    region = USER_REGIONS[user_id]
+    
+    now = datetime.now()
+    
     return {
         'tx_id': str(uuid.uuid4()),
-        'card_number': fake.credit_card_number(),
-        'amount': random.randint(1000, 1000000),
-        'merchant': fake.company(),
+        'user_id': user_id,
+        'user_tier': USER_TIERS[user_id],
+        'card_number': USER_CARDS[user_id],
+        'amount': amount,
+        'merchant': merchant,
+        'merchant_category': category,
+        'region': region,
+        'hour': now.hour,
+        'day_of_week': now.weekday(),
+        'is_weekend': now.weekday() >= 5,
+        'time_slot': get_time_slot(now.hour),
         'created_at': time.time()
     }
 
@@ -73,7 +246,7 @@ def run_phase1(tps: int, metrics: MetricsCollector):
 # ============================================
 
 async def run_phase2(tps: int, metrics: MetricsCollector):
-    print(f"[Phase 2] Starting generator with target TPS: {tps}")
+    print(f"[Phase 2] Pool size: 10-50")
     sys.stdout.flush()
     
     pool = await asyncpg.create_pool(
@@ -283,13 +456,10 @@ async def run_phase2_max(tps: int, metrics: MetricsCollector):
 # ============================================
 
 async def run_phase3(tps: int, metrics: MetricsCollector):
-    """Phase 3: Generator → Redis (LPUSH)"""
-    print(f"[Phase 3] Starting generator with target TPS: {tps}")
+    print(f"[Phase 3] Redis Buffer mode")
     print(f"[Phase 3] Redis: {Config.REDIS_HOST}:{Config.REDIS_PORT}")
-    print(f"[Phase 3] Mode: Redis Buffer (LPUSH)")
     sys.stdout.flush()
     
-    # Redis 연결
     redis_client = await aioredis.from_url(
         f"redis://{Config.REDIS_HOST}:{Config.REDIS_PORT}",
         encoding="utf-8",
@@ -300,14 +470,12 @@ async def run_phase3(tps: int, metrics: MetricsCollector):
     sys.stdout.flush()
     
     last_metrics_time = time.time()
-    batch_size = 100  # 한 번에 100건씩 Redis에 푸시
+    batch_size = 100
     
     async def push_batch():
-        """Batch로 Redis에 푸시"""
         transactions = [generate_transaction() for _ in range(batch_size)]
         start = time.time()
         
-        # Pipeline으로 한번에 푸시
         pipe = redis_client.pipeline()
         for tx in transactions:
             pipe.lpush("tx_queue", json.dumps(tx))
@@ -319,7 +487,6 @@ async def run_phase3(tps: int, metrics: MetricsCollector):
         while True:
             loop_start = time.time()
             
-            # 동시에 여러 배치 푸시
             concurrent_batches = max(tps // (batch_size * 10), 1)
             tasks = [push_batch() for _ in range(concurrent_batches)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -334,13 +501,11 @@ async def run_phase3(tps: int, metrics: MetricsCollector):
                     for _ in range(count):
                         metrics.record_success(latency / count)
             
-            # 메트릭 출력 (Queue 길이 포함)
             if time.time() - last_metrics_time >= Config.METRICS_INTERVAL:
                 queue_len = await redis_client.llen("tx_queue")
                 metrics.flush(queue_length=queue_len)
                 last_metrics_time = time.time()
             
-            # TPS 조절
             total_pushed = concurrent_batches * batch_size
             elapsed = time.time() - loop_start
             expected_time = total_pushed / tps
@@ -356,9 +521,10 @@ async def run_phase3(tps: int, metrics: MetricsCollector):
 
 def main():
     print("=" * 60)
-    print("FDS Pipeline Generator")
+    print("FDS Pipeline Generator (Realistic Data)")
     print(f"Phase: {Config.PHASE}")
     print(f"Target TPS: {Config.TPS}")
+    print(f"Users: {NUM_USERS}, Categories: {len(CATEGORIES)}")
     print("=" * 60)
     sys.stdout.flush()
     
