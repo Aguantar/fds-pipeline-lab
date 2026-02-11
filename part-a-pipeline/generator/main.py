@@ -18,7 +18,7 @@ from metrics import MetricsCollector
 # 현실적 데이터 생성기 (sample_data_generator 기반)
 # ============================================
 
-NUM_USERS = 500
+NUM_USERS = 100000
 random.seed(None)  # 매번 다른 시드
 
 USER_IDS = [f"user_{i:05d}" for i in range(NUM_USERS)]
@@ -182,6 +182,21 @@ def generate_transaction() -> dict:
     
     now = datetime.now()
     
+    # 영업시간 내 랜덤 시간 생성
+    hours_range = MERCHANTS[category]['hours']
+    if hours_range[0] < hours_range[1]:
+        # 일반 (예: 10~21시)
+        hour = random.randint(hours_range[0], hours_range[1] - 1)
+    else:
+        # 야간 영업 (예: 10~2시 = 10~24 또는 0~2)
+        if random.random() < 0.8:
+            hour = random.randint(hours_range[0], 23)
+        else:
+            hour = random.randint(0, hours_range[1])
+    
+    day_of_week = random.randint(0, 6)
+    is_weekend = day_of_week >= 5
+    
     return {
         'tx_id': str(uuid.uuid4()),
         'user_id': user_id,
@@ -191,10 +206,10 @@ def generate_transaction() -> dict:
         'merchant': merchant,
         'merchant_category': category,
         'region': region,
-        'hour': now.hour,
-        'day_of_week': now.weekday(),
-        'is_weekend': now.weekday() >= 5,
-        'time_slot': get_time_slot(now.hour),
+        'hour': hour,
+        'day_of_week': day_of_week,
+        'is_weekend': is_weekend,
+        'time_slot': get_time_slot(hour),
         'created_at': time.time()
     }
 
