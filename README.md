@@ -248,3 +248,24 @@ fds-pipeline-lab/
 
 - GitHub: [@Aguantar](https://github.com/Aguantar)
 - 프로젝트: 토스 데이터 엔지니어 면접 대비
+
+---
+
+## Part B: SLA 모니터링 (n8n)
+
+### 기술 선택
+
+처음에는 Airflow로 설계했으나, 단순 모니터링에는 오버스펙으로 판단하여 기존 n8n 인프라를 활용했습니다.
+
+### 워크플로우
+```
+Schedule Trigger (1분) → PostgreSQL → IF (처리량 < 1000) → Slack + Gmail 알림
+```
+
+### SLA 정의
+
+| SLA | 조건 | 알림 |
+|-----|------|------|
+| Consumer 처리량 | 1분간 < 1,000건 | Slack + Email |
+
+자세한 내용: [docs/05-part-b-sla-monitoring.md](docs/05-part-b-sla-monitoring.md)
