@@ -2,16 +2,16 @@
 
 ## 1. 개요
 
-### 왜 n8n을 선택했는가?
+FDS 파이프라인의 안정적 운영을 위해 SLA 모니터링 시스템을 구축했다.
 
-처음에는 Airflow로 설계했으나, 실제 구현 단계에서 재검토한 결과:
+### 기술 선택: n8n
 
-| 도구 | 장점 | 단점 |
-|------|------|------|
-| Airflow | 복잡한 DAG, 배치 작업에 적합 | 단순 모니터링에는 오버스펙 |
-| n8n | 기존 인프라 활용, GUI, 빠른 구축 | 복잡한 의존성 처리 어려움 |
-
-**결론:** 단순 SLA 모니터링에는 n8n이 더 적합
+| 선택 이유 |
+|-----------|
+| 단순 모니터링 (1분마다 DB 조회 → 조건 체크 → 알림) |
+| 기존 인프라 활용 가능 |
+| GUI 기반 빠른 구축 |
+| 복잡한 DAG 의존성 불필요 |
 
 ---
 
@@ -74,17 +74,16 @@ WHERE processed_at >= NOW() - INTERVAL '1 minute'
 
 ### Email
 - 제목: 🚨 FDS Pipeline SLA 위반 알림
-- 동일한 내용
+- 내용: Slack과 동일
 
 ---
 
-## 6. 설정 과정
+## 6. 구현 상세
 
-### 6-1. n8n-PostgreSQL 네트워크 연결
+### 6-1. 네트워크 연결
 
-n8n과 FDS 파이프라인이 다른 Docker 네트워크에 있어서 연결 필요:
+n8n과 FDS 파이프라인이 다른 Docker 네트워크에 있어 연결 필요:
 ```bash
-# n8n 컨테이너를 fds-network에 연결
 docker network connect fds-network n8n-n8n-1
 docker network connect fds-network n8n-worker-1
 ```
@@ -92,16 +91,13 @@ docker network connect fds-network n8n-worker-1
 ### 6-2. Slack 연동
 
 1. Slack App 생성 (https://api.slack.com/apps)
-2. OAuth & Permissions에서 Bot Token Scopes 추가:
-   - `chat:write`
-   - `chat:write.public`
-3. Bot User OAuth Token 복사
-4. n8n Slack Credential에 토큰 입력
-5. 봇을 채널에 초대
+2. Bot Token Scopes: `chat:write`, `chat:write.public`
+3. Bot User OAuth Token → n8n Credential
+4. 봇을 채널에 초대
 
 ### 6-3. Gmail 연동
 
-1. Google Cloud Console에서 OAuth 클라이언트 생성
+1. Google Cloud Console → OAuth 클라이언트 생성
 2. Gmail API 활성화
 3. 테스트 사용자 추가
 4. n8n Gmail OAuth2 Credential 설정
@@ -110,24 +106,13 @@ docker network connect fds-network n8n-worker-1
 
 ## 7. 면접 예상 질문
 
-### Q1. 왜 Airflow 대신 n8n을 선택했나요?
+**Q. SLA 모니터링을 어떻게 구현했나요?**
 
-> "처음에는 Airflow로 설계했습니다. 하지만 이 프로젝트의 모니터링 요구사항은 단순합니다.
-> 1분마다 DB 조회 후 조건 체크하고 알림 보내는 게 전부예요.
-> 복잡한 DAG 의존성이나 재처리 기능이 필요 없어서, 이미 운영 중인 n8n을 활용하는 게
-> 리소스도 절약되고 유지보수도 쉽다고 판단했습니다."
+> "n8n으로 1분마다 DB를 조회해서 처리량이 기준 미달이면 Slack과 Email로 알림을 보냅니다.
+> 복잡한 워크플로우가 아니라 단순 모니터링이라서 Airflow 같은 무거운 도구 대신
+> 기존에 운영 중인 n8n을 활용했습니다."
 
-### Q2. Airflow가 더 적합한 경우는?
+**Q. SLA 기준은 어떻게 정했나요?**
 
-> "배치 작업이 복잡한 경우입니다. 예를 들어:
-> - 일별 데이터 집계 → 주간 리포트 생성 → S3 업로드
-> - 실패 시 특정 날짜만 재처리
-> - 여러 데이터 소스 간 의존성 관리
-> 이런 경우에는 Airflow의 DAG, 백필, 태스크 의존성 기능이 필요합니다."
-
----
-
-## 8. 다음 단계
-
-- [ ] 데이터 분석 & 시각화
-- [ ] SLA 확장 (Queue 길이, Fraud 비율 등)
+> "파이프라인 정상 운영 시 TPS 약 100, 즉 분당 6,000건 처리합니다.
+> 1,000건 미만이면 심각한 장애 상황이라 판단해서 이 기준을 설정했습니다."
