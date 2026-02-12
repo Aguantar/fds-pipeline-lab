@@ -282,6 +282,8 @@ Phase 3: Producer-Consumer 분리로 안정성 확보
 [Gmail]   이상거래
 SLA위반   탐지알림
 ```
+<img width="2100" height="1045" alt="image" src="https://github.com/user-attachments/assets/f95db2d4-9935-4cc5-a5da-b81257725b8e" />
+
 
 ### 알림 종류
 
@@ -312,6 +314,9 @@ WHERE processed_at >= NOW() - INTERVAL '1 minute'
 이상거래: 0건
 시간: 2026-02-12 09:30:00
 ```
+<img width="1450" height="175" alt="image" src="https://github.com/user-attachments/assets/45794beb-e882-4227-a9ed-39b679c9bc25" />
+<img width="1909" height="606" alt="image" src="https://github.com/user-attachments/assets/bca2e785-d5cd-4dd3-a3ef-02dba7106abd" />
+
 
 **이상거래 탐지 알림**
 ```
@@ -322,6 +327,8 @@ WHERE processed_at >= NOW() - INTERVAL '1 minute'
 탐지율: 0.62%
 시간: 2026-02-12 09:32:26
 ```
+<img width="1500" height="199" alt="image" src="https://github.com/user-attachments/assets/8e403090-47ce-42aa-9a01-126e6cf0d4f2" />
+
 
 ---
 
