@@ -1,17 +1,13 @@
-# Part B: SLA 모니터링 (n8n)
+# Part B: SLA 모니터링 & 이상거래 알림 (n8n)
 
 ## 1. 개요
 
-FDS 파이프라인의 안정적 운영을 위해 SLA 모니터링 시스템을 구축했다.
+FDS 파이프라인의 안정적 운영을 위해 **두 가지 알림 시스템**을 구축했다.
 
-### 기술 선택: n8n
-
-| 선택 이유 |
-|-----------|
-| 단순 모니터링 (1분마다 DB 조회 → 조건 체크 → 알림) |
-| 기존 인프라 활용 가능 |
-| GUI 기반 빠른 구축 |
-| 복잡한 DAG 의존성 불필요 |
+| 알림 유형 | 목적 | 조건 |
+|----------|------|------|
+| SLA 위반 | 파이프라인 장애 감지 | 처리량 < 1,000건/분 |
+| 이상거래 탐지 | FDS 룰 탐지 알림 | fraud_count > 0 |
 
 ---
 
@@ -22,48 +18,63 @@ FDS 파이프라인의 안정적 운영을 위해 SLA 모니터링 시스템을 
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│   PostgreSQL    │ (SLA 체크 쿼리)
-│  - 처리량 확인   │
-│  - 이상거래 비율 │
+│   PostgreSQL    │ (통합 쿼리)
+│  - 처리량       │
+│  - 이상거래 수  │
+│  - 이상거래 금액│
 └────────┬────────┘
-         ▼
-┌─────────────────┐
-│       IF        │ (처리량 < 1,000건?)
-└────────┬────────┘
-         ▼ True
+         │
     ┌────┴────┐
     ▼         ▼
 ┌───────┐ ┌───────┐
-│ Slack │ │ Gmail │
-│ 알림  │ │ 알림  │
-└───────┘ └───────┘
+│  IF   │ │  IF1  │
+│ SLA   │ │ Fraud │
+└───┬───┘ └───┬───┘
+    │         │
+    ▼         ▼
+[Slack]   [Slack]
+[Gmail]   이상거래 알림
+SLA 알림
 ```
 
 ---
 
-## 3. SLA 정의
-
-| SLA | 조건 | 알림 |
-|-----|------|------|
-| Consumer 처리량 | 1분간 처리량 < 1,000건 | ⚠️ Slack + Email |
-
----
-
-## 4. 모니터링 쿼리
+## 3. 모니터링 쿼리
 ```sql
 SELECT 
     COUNT(*) as total_count,
     SUM(CASE WHEN is_fraud THEN 1 ELSE 0 END) as fraud_count,
-    ROUND(SUM(CASE WHEN is_fraud THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0) * 100, 2) as fraud_rate
+    ROUND(SUM(CASE WHEN is_fraud THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0) * 100, 2) as fraud_rate,
+    COALESCE(SUM(CASE WHEN is_fraud THEN amount ELSE 0 END), 0) as fraud_amount
 FROM fds.transactions
 WHERE processed_at >= NOW() - INTERVAL '1 minute'
 ```
 
 ---
 
+## 4. 알림 조건
+
+### 4-1. SLA 위반 알림
+
+| 조건 | 알림 채널 |
+|------|----------|
+| total_count < 1000 | Slack + Email |
+
+**의미:** 파이프라인이 정상 작동하지 않음 (장애 감지)
+
+### 4-2. 이상거래 탐지 알림
+
+| 조건 | 알림 채널 |
+|------|----------|
+| fraud_count > 0 | Slack |
+
+**의미:** FDS 룰에 의해 이상거래가 탐지됨
+
+---
+
 ## 5. 알림 메시지
 
-### Slack
+### SLA 위반
 ```
 🚨 FDS Pipeline SLA 위반
 
@@ -72,47 +83,37 @@ WHERE processed_at >= NOW() - INTERVAL '1 minute'
 시간: {{ $now.format('yyyy-MM-dd HH:mm:ss') }}
 ```
 
-### Email
-- 제목: 🚨 FDS Pipeline SLA 위반 알림
-- 내용: Slack과 동일
+### 이상거래 탐지
+```
+🚨 이상거래 탐지!
+
+최근 1분간: {{ $json.fraud_count }}건
+탐지 금액: {{ $json.fraud_amount.toLocaleString() }}원
+탐지율: {{ $json.fraud_rate }}%
+시간: {{ $now.format('yyyy-MM-dd HH:mm:ss') }}
+```
 
 ---
 
-## 6. 구현 상세
+## 6. 구현 시 주의사항
 
-### 6-1. 네트워크 연결
+### 타입 변환 필요
 
-n8n과 FDS 파이프라인이 다른 Docker 네트워크에 있어 연결 필요:
-```bash
-docker network connect fds-network n8n-n8n-1
-docker network connect fds-network n8n-worker-1
-```
+PostgreSQL에서 반환된 숫자가 문자열로 인식될 수 있음.
 
-### 6-2. Slack 연동
-
-1. Slack App 생성 (https://api.slack.com/apps)
-2. Bot Token Scopes: `chat:write`, `chat:write.public`
-3. Bot User OAuth Token → n8n Credential
-4. 봇을 채널에 초대
-
-### 6-3. Gmail 연동
-
-1. Google Cloud Console → OAuth 클라이언트 생성
-2. Gmail API 활성화
-3. 테스트 사용자 추가
-4. n8n Gmail OAuth2 Credential 설정
+**해결:** IF 노드에서 "Convert types where required" 옵션 활성화
 
 ---
 
 ## 7. 면접 예상 질문
 
-**Q. SLA 모니터링을 어떻게 구현했나요?**
+**Q. 이상거래 탐지 시 어떻게 알림을 보내나요?**
 
-> "n8n으로 1분마다 DB를 조회해서 처리량이 기준 미달이면 Slack과 Email로 알림을 보냅니다.
-> 복잡한 워크플로우가 아니라 단순 모니터링이라서 Airflow 같은 무거운 도구 대신
-> 기존에 운영 중인 n8n을 활용했습니다."
+> "n8n으로 1분마다 DB를 조회해서 이상거래 건수가 0보다 크면 Slack으로 알림을 보냅니다.
+> 탐지 건수, 금액, 탐지율을 포함해서 운영자가 즉시 파악할 수 있게 했습니다."
 
-**Q. SLA 기준은 어떻게 정했나요?**
+**Q. SLA 모니터링과 이상거래 알림의 차이는?**
 
-> "파이프라인 정상 운영 시 TPS 약 100, 즉 분당 6,000건 처리합니다.
-> 1,000건 미만이면 심각한 장애 상황이라 판단해서 이 기준을 설정했습니다."
+> "SLA 모니터링은 '파이프라인이 죽었나?' 체크입니다. 처리량이 기준 미달이면 시스템 장애로 판단합니다.
+> 이상거래 알림은 '의심스러운 거래가 있나?' 체크입니다. FDS 룰에 걸린 거래가 있으면 알려줍니다.
+> 둘 다 필요합니다. 시스템이 정상이어도 이상거래는 발생할 수 있고, 시스템이 죽으면 이상거래 탐지 자체가 안 되니까요."
